@@ -274,11 +274,16 @@ function glbToObj(buffer) {
   return new TextEncoder().encode(`${lines.join("\n")}\n`).buffer;
 }
 
-async function convert(buffer, format) {
-  const mod = await getMeshyModule();
-  const result = mod.processMeshyFile(new Uint8Array(buffer));
-  if (!result?.success) throw new Error(result?.error || "Failed to decode .meshy.");
-  const glb = result.data instanceof Uint8Array ? result.data.buffer.slice(result.data.byteOffset, result.data.byteOffset + result.data.byteLength) : result.data;
+async function convert(buffer, format, provider) {
+  let glb = buffer;
+  if (provider === "meshy") {
+    const mod = await getMeshyModule();
+    const result = mod.processMeshyFile(new Uint8Array(buffer));
+    if (!result?.success) throw new Error(result?.error || "Failed to decode .meshy.");
+    glb = result.data instanceof Uint8Array
+      ? result.data.buffer.slice(result.data.byteOffset, result.data.byteOffset + result.data.byteLength)
+      : result.data;
+  }
   if (format === "glb") return glb;
   if (format === "obj") return glbToObj(glb);
   if (format === "stl") return glbToBinaryStl(glb);
@@ -288,7 +293,7 @@ async function convert(buffer, format) {
 window.addEventListener("message", async (event) => {
   if (event.data?.type !== "convert") return;
   try {
-    const output = await convert(event.data.buffer, event.data.format);
+    const output = await convert(event.data.buffer, event.data.format, event.data.provider);
     event.source.postMessage({ id: event.data.id, ok: true, output }, event.origin, [output]);
   } catch (error) {
     event.source.postMessage({ id: event.data.id, ok: false, error: error.message }, event.origin);

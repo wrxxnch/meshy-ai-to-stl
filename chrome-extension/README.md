@@ -1,10 +1,10 @@
 # Meshy To STL
 
-Local Chrome extension that finds `.meshy` files loaded by the current tab and converts them to STL, OBJ, or GLB.
+Local Chrome extension that detects whether the current model page is Meshy or Tripo. Meshy `.meshy` files can be converted to STL, OBJ, or GLB. Tripo GLB files can be converted to STL or OBJ; Tripo OBJ, FBX, and GLTF files can be downloaded in their original format.
 
 ## Install
 
-Before loading the extension, download the local decoder files:
+Before loading the extension, download the local decoder files (required only for Meshy):
 
 ### Windows
 
@@ -28,19 +28,17 @@ sh ./setup-vendor.sh
 
 ## Use
 
-1. Open the page where the `.meshy` model is hosted.
-2. Reload the page so the extension can capture network activity.
-3. Click the extension icon.
-4. Select the detected `.meshy` file.
-5. Choose STL, OBJ, or GLB.
-6. Click the download button.
+1. Open a Meshy model page or a Tripo Studio model page.
+2. After installing or updating the extension, reload the Tripo model page so its early `fetch`/`XMLHttpRequest` requests can be captured.
+3. Click the extension icon and scan the page.
+4. Select a detected model file.
+5. Choose a supported output format and click the download button.
 
 ## Notes
 
-- Conversion runs locally in the browser.
-- `vendor/mesh_loader.js` and `vendor/mesh_loader.wasm` are not versioned in this repository; run the setup script for your operating system to download local copies.
-- If the extension says decoder files are missing, run `setup-vendor.ps1` on Windows or `sh ./setup-vendor.sh` on macOS/Linux, then reload the extension in `chrome://extensions`.
+- Conversion runs locally in your browser.
+- Tripo detection hooks model requests in the page's main JavaScript context at document start; reload the Tripo page after loading or updating the extension.
+- `vendor/mesh_loader.js` and `vendor/mesh_loader.wasm` are not versioned in this repository; run the setup script on your operating system to download local copies for Meshy.
+- Tripo FBX and GLTF can currently be downloaded in their original formats, but not converted to STL/OBJ. STL/OBJ conversion requires a Tripo GLB source.
 - The extension requires Google Chrome or a compatible Chromium browser; Safari is not supported.
-- STL output is binary, OBJ output contains geometry without materials, and GLB preserves the decoded model data.
-- The extension also checks `performance.getEntriesByType("resource")`, so many files visible in the Network panel will automatically appear in the popup.
 - Sites with login, temporary URLs, or strict download permissions may require you to be logged in with the same Chrome session.

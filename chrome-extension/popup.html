@@ -13,13 +13,15 @@
         <button id="scan" type="button" title="Refresh current tab scan">Refresh</button>
       </header>
 
-      <select id="links" size="7" aria-label="Arquivos .meshy encontrados"></select>
+      <select id="links" size="7" aria-label="Arquivos de modelo encontrados"></select>
 
       <label for="format">Output format</label>
       <select id="format">
         <option value="stl">STL (3D printing)</option>
         <option value="obj">OBJ (3D editors)</option>
         <option value="glb">GLB (original decoded model)</option>
+        <option value="fbx" hidden>FBX (original Tripo model)</option>
+        <option value="gltf" hidden>GLTF (original Tripo model)</option>
       </select>
 
       <div class="row">

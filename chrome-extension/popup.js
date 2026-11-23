@@ -7,6 +7,8 @@ const progress = document.getElementById("progress");
 const sandboxFrame = document.getElementById("sandbox");
 
 let jobId = 0;
+let activeProvider = "unknown";
+let modelLinks = [];
 
 function setBusy(isBusy, text) {
   scanButton.disabled = isBusy;
@@ -15,48 +17,36 @@ function setBusy(isBusy, text) {
   statusEl.textContent = text;
 }
 
-function isMeshyUrl(value) {
+function providerForUrl(value) {
+  try {
+    const host = new URL(value).hostname.toLowerCase();
+    if (host === "tripo3d.ai" || host.endsWith(".tripo3d.ai")) return "tripo";
+    if (host === "meshy.ai" || host.endsWith(".meshy.ai")) return "meshy";
+  } catch { /* Ignore invalid URLs. */ }
+  return "unknown";
+}
+
+function extensionFromUrl(value) {
+  try {
+    return new URL(value).pathname.split("/").pop().match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() || "";
+  } catch { return ""; }
+}
+
+function isProviderUrl(value, provider) {
   if (!value || typeof value !== "string") return false;
-  const clean = value.split("#")[0];
-  return /\.meshy(?:$|[?&])/i.test(clean) || clean.includes("misc/cdn-models");
+  try {
+    const path = new URL(value).pathname.toLowerCase();
+    if (provider === "meshy") return /\.meshy$/i.test(path) || path.includes("misc/cdn-models");
+    if (provider === "tripo") return /\.(?:glb|gltf|fbx|obj)$/i.test(path);
+  } catch { /* Ignore invalid URLs. */ }
+  return false;
 }
 
 function baseNameFromUrl(value) {
   try {
-    const path = new URL(value).pathname.split("/").pop() || "model.meshy";
-    const decoded = decodeURIComponent(path).replace(/\.meshy$/i, "");
-    return decoded.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/g, "") || "model";
-  } catch {
-    return "model";
-  }
-}
-
-function scanPageForMeshyLinks() {
-  const urls = new Set();
-  const add = (value) => {
-    if (!value || typeof value !== "string") return;
-    try {
-      const url = new URL(value, location.href);
-      const clean = url.href.split("#")[0];
-      if (/\.meshy(?:$|[?&])/i.test(clean) || clean.includes("misc/cdn-models")) urls.add(url.href);
-    } catch {
-      // Ignore invalid URLs.
-    }
-  };
-
-  performance.getEntriesByType("resource").forEach((entry) => add(entry.name));
-  document.querySelectorAll("a[href]").forEach((el) => add(el.getAttribute("href")));
-  document.querySelectorAll("[src]").forEach((el) => add(el.getAttribute("src")));
-  document.querySelectorAll("[data-src],[data-url],[data-model-url]").forEach((el) => {
-    add(el.getAttribute("data-src"));
-    add(el.getAttribute("data-url"));
-    add(el.getAttribute("data-model-url"));
-  });
-  for (const match of document.documentElement.innerHTML.matchAll(/https?:\/\/[^"'<>\\\s]+(?:\.meshy|misc\/cdn-models)[^"'<>\\\s]*/gi)) {
-    add(match[0]);
-  }
-
-  return [...urls].slice(0, 50);
+    const path = new URL(value).pathname.split("/").pop() || "model";
+    return decodeURIComponent(path).replace(/\.[^.]+$/, "").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").replace(/[. ]+$/g, "") || "model";
+  } catch { return "model"; }
 }
 
 async function getActiveTab() {
@@ -67,34 +57,72 @@ async function getActiveTab() {
 
 async function getLinksFromActiveTab() {
   const tab = await getActiveTab();
+  activeProvider = providerForUrl(tab.url || "");
+  if (activeProvider === "unknown") return [];
   const all = new Set();
 
-  const remembered = await chrome.runtime.sendMessage({ type: "get-meshy-requests", tabId: tab.id }).catch(() => null);
+  const remembered = await chrome.runtime.sendMessage({
+    type: "get-model-requests", tabId: tab.id, provider: activeProvider,
+  }).catch(() => null);
   for (const link of remembered?.links || []) all.add(link);
 
   try {
-    const response = await chrome.tabs.sendMessage(tab.id, { type: "scan-meshy-links" });
+    const response = await chrome.tabs.sendMessage(tab.id, { type: "scan-model-links" });
     for (const link of response?.links || []) all.add(link);
   } catch {
     const [result] = await chrome.scripting.executeScript({
       target: { tabId: tab.id },
-      func: scanPageForMeshyLinks,
+      func: (provider) => {
+        const urls = new Set();
+        const accept = (value) => {
+          try {
+            const url = new URL(value, location.href);
+            const path = url.pathname.toLowerCase();
+            if (provider === "meshy" ? /\.meshy$/i.test(path) || path.includes("misc/cdn-models") : /\.(?:glb|gltf|fbx|obj)$/i.test(path)) urls.add(url.href);
+          } catch { /* Ignore invalid URLs. */ }
+        };
+        performance.getEntriesByType("resource").forEach((entry) => accept(entry.name));
+        document.querySelectorAll("a[href],[src],[data-src],[data-url],[data-model-url]").forEach((el) => {
+          for (const attr of ["href", "src", "data-src", "data-url", "data-model-url"]) accept(el.getAttribute(attr));
+        });
+        for (const match of document.documentElement.innerHTML.matchAll(/https?:\/\/[^"'<>\\\s]+/gi)) accept(match[0]);
+        return [...urls].slice(0, 50);
+      },
+      args: [activeProvider],
     });
     for (const link of result?.result || []) all.add(link);
   }
-
-  return [...all].filter(isMeshyUrl).slice(0, 50);
+  return [...all].filter((url) => isProviderUrl(url, activeProvider)).slice(0, 50);
 }
 
 function fillLinks(links) {
+  modelLinks = links;
   linksSelect.replaceChildren();
   for (const link of links) {
     const option = document.createElement("option");
     option.value = link;
-    option.textContent = link;
+    const ext = extensionFromUrl(link);
+    option.textContent = `${ext.toUpperCase()} · ${link}`;
     linksSelect.append(option);
   }
   if (linksSelect.options.length) linksSelect.selectedIndex = 0;
+  updateFormatChoices();
+}
+
+function updateFormatChoices() {
+  const url = linksSelect.value;
+  const ext = extensionFromUrl(url);
+  const tripo = activeProvider === "tripo";
+  for (const option of formatSelect.options) {
+    const directOnly = ["fbx", "gltf"].includes(option.value);
+    option.hidden = directOnly && (!tripo || ext !== option.value);
+  }
+  if (tripo && ["fbx", "gltf"].includes(ext)) formatSelect.value = ext;
+  else if (tripo && ext === "obj") formatSelect.value = "obj";
+  else if (!tripo && ["fbx", "gltf"].includes(formatSelect.value)) formatSelect.value = "stl";
+  convertButton.textContent = activeProvider === "tripo" && formatSelect.value === ext
+    ? `Download ${ext.toUpperCase()}`
+    : `Download ${formatSelect.value.toUpperCase()}`;
 }
 
 function downloadBlob(blob, filename) {
@@ -109,7 +137,7 @@ function downloadBlob(blob, filename) {
   });
 }
 
-function convertInSandbox(buffer, format) {
+function convertInSandbox(buffer, format, provider) {
   return new Promise((resolve, reject) => {
     const id = ++jobId;
     const onMessage = (event) => {
@@ -119,7 +147,7 @@ function convertInSandbox(buffer, format) {
       else reject(new Error(event.data.error || "Conversion failed"));
     };
     window.addEventListener("message", onMessage);
-    sandboxFrame.contentWindow.postMessage({ type: "convert", id, format, buffer }, "*", [buffer]);
+    sandboxFrame.contentWindow.postMessage({ type: "convert", id, format, provider, buffer }, "*", [buffer]);
   });
 }
 
@@ -131,12 +159,15 @@ async function fetchArrayBuffer(url) {
 
 async function scan() {
   try {
-    setBusy(true, "Searching for .meshy files in the current tab network activity...");
+    setBusy(true, "Detecting provider and searching for model files...");
     const links = await getLinksFromActiveTab();
     fillLinks(links);
+    const providerName = activeProvider === "tripo" ? "Tripo" : activeProvider === "meshy" ? "Meshy" : "supported provider";
     statusEl.textContent = links.length
-      ? `${links.length} .meshy file(s) found.`
-      : "No .meshy file found. Reload the page with the extension installed and try again.";
+      ? `${providerName}: ${links.length} model file(s) found.`
+      : activeProvider === "unknown"
+        ? "Open a Meshy or Tripo model page, then scan again."
+        : `No ${activeProvider === "tripo" ? "GLB, GLTF, FBX, or OBJ" : ".meshy"} file found. Reload the model page and try again.`;
   } catch (error) {
     statusEl.textContent = `Scan error: ${error.message}`;
   } finally {
@@ -145,27 +176,36 @@ async function scan() {
 }
 
 scanButton.addEventListener("click", scan);
-
-formatSelect.addEventListener("change", () => {
-  convertButton.textContent = `Download ${formatSelect.value.toUpperCase()}`;
-});
+linksSelect.addEventListener("change", updateFormatChoices);
+formatSelect.addEventListener("change", updateFormatChoices);
 
 convertButton.addEventListener("click", async () => {
   const url = linksSelect.value;
   if (!url) {
-    statusEl.textContent = "No .meshy file selected.";
+    statusEl.textContent = "No model file selected.";
     return;
   }
 
   try {
     const format = formatSelect.value;
-    setBusy(true, "Downloading .meshy...");
+    const sourceExt = extensionFromUrl(url);
+    setBusy(true, `Downloading ${sourceExt.toUpperCase()}...`);
     const buffer = await fetchArrayBuffer(url);
-    setBusy(true, format === "glb" ? "Decoding GLB..." : `Decoding and converting to ${format.toUpperCase()}...`);
-    const output = await convertInSandbox(buffer, format);
-    const mimeTypes = { stl: "model/stl", obj: "model/obj", glb: "model/gltf-binary" };
-    await downloadBlob(new Blob([output], { type: mimeTypes[format] }), `${baseNameFromUrl(url)}.${format}`);
-    statusEl.textContent = `${format.toUpperCase()} generated.`;
+    let output;
+    if (activeProvider === "tripo" && format === sourceExt) {
+      output = buffer;
+    } else if (activeProvider === "tripo" && sourceExt === "glb" && ["stl", "obj"].includes(format)) {
+      setBusy(true, `Converting Tripo GLB to ${format.toUpperCase()}...`);
+      output = await convertInSandbox(buffer, format, "tripo");
+    } else if (activeProvider === "meshy" && sourceExt === "meshy") {
+      setBusy(true, format === "glb" ? "Decoding Meshy model..." : `Decoding and converting to ${format.toUpperCase()}...`);
+      output = await convertInSandbox(buffer, format, "meshy");
+    } else {
+      throw new Error(`Conversion from ${sourceExt.toUpperCase()} to ${format.toUpperCase()} is not supported. Tripo STL/OBJ export currently requires a GLB source.`);
+    }
+    const mimeTypes = { stl: "model/stl", obj: "model/obj", glb: "model/gltf-binary", fbx: "application/octet-stream", gltf: "model/gltf+json" };
+    await downloadBlob(new Blob([output], { type: mimeTypes[format] || "application/octet-stream" }), `${baseNameFromUrl(url)}.${format}`);
+    statusEl.textContent = `${format.toUpperCase()} downloaded.`;
   } catch (error) {
     statusEl.textContent = `Error: ${error.message}`;
   } finally {
